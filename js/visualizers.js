@@ -63,6 +63,10 @@
       this.tunnelScroll = 0;
       this.tunnelSpin = 0;
       this.roadScroll = 0;
+      this.roadFill = null; // smoothed per-lane fill [cols]
+      this.smEnergy = 0;
+      this.smBass = 0;
+      this.smMid = 0;
       this.initModeState();
     }
 
@@ -77,6 +81,22 @@
       this.tunnelScroll = 0;
       this.tunnelSpin = 0;
       this.roadScroll = 0;
+      this.roadFill = null;
+      this.smEnergy = 0;
+      this.smBass = 0;
+      this.smMid = 0;
+    }
+
+    /** Heavily smoothed, high-floor levels so noisy capture stays calm. */
+    smoothLevels(a) {
+      const e = gate(a.energy, 0.12, 1.1);
+      const b = gate(a.bass, 0.14, 1.1);
+      const m = gate(a.mid, 0.12, 1.1);
+      // square to push mid-levels down further
+      this.smEnergy = lerp(this.smEnergy, e * e, 0.08);
+      this.smBass = lerp(this.smBass, b * b, 0.1);
+      this.smMid = lerp(this.smMid, m * m, 0.08);
+      return { e: this.smEnergy, b: this.smBass, m: this.smMid };
     }
 
     setMode(id) {
@@ -370,24 +390,25 @@
       }
     }
 
-    /* ---------- SYNTHWAVE (filled reactive road) ---------- */
+    /* ---------- SYNTHWAVE — hollow neon cells that FILL with color ---------- */
     draw_synthwave(g, w, h, a, dt) {
-      const energy = gate(a.energy, 0.04, 1.5);
-      const bass = gate(a.bass, 0.05, 1.4);
-      const mid = gate(a.mid, 0.04, 1.4);
-      const treble = gate(a.treble, 0.04, 1.5);
+      const lv = this.smoothLevels(a);
+      const energy = lv.e;
+      const bass = lv.b;
+      const mid = lv.m;
+      const treble = gate(a.treble, 0.1, 1.1);
 
       // sky
-      const sky = g.createLinearGradient(0, 0, 0, h * 0.5);
+      const sky = g.createLinearGradient(0, 0, 0, h * 0.48);
       sky.addColorStop(0, "#12062a");
       sky.addColorStop(0.55, "#4a1a6a");
       sky.addColorStop(1, "#ff6b9d");
       g.fillStyle = sky;
-      g.fillRect(0, 0, w, h * 0.5);
+      g.fillRect(0, 0, w, h * 0.48);
 
       // sun
-      const sunY = h * 0.34 - bass * 8;
-      const sunR = Math.min(w, h) * 0.13 + mid * 8;
+      const sunY = h * 0.32 - bass * 6;
+      const sunR = Math.min(w, h) * 0.12 + mid * 6;
       const sun = g.createRadialGradient(w / 2, sunY, 0, w / 2, sunY, sunR);
       sun.addColorStop(0, "#ffe566");
       sun.addColorStop(0.55, "#ff8c42");
@@ -405,78 +426,71 @@
       // mountains
       g.fillStyle = "#221038";
       g.beginPath();
-      g.moveTo(0, h * 0.5);
+      g.moveTo(0, h * 0.48);
       for (let x = 0; x <= w; x += 16) {
         const n = Math.sin(x * 0.018) * 28 + Math.sin(x * 0.05) * 14;
-        g.lineTo(x, h * 0.44 + n - treble * 6);
+        g.lineTo(x, h * 0.42 + n - treble * 4);
       }
-      g.lineTo(w, h * 0.5);
+      g.lineTo(w, h * 0.48);
       g.closePath();
       g.fill();
 
-      const horizon = h * 0.5;
+      const horizon = h * 0.48;
       const groundH = h - horizon;
 
-      // dark ground base
-      g.fillStyle = "#080412";
+      g.fillStyle = "#060210";
       g.fillRect(0, horizon, w, groundH);
 
-      // scroll only with music (crawl when very quiet)
-      this.roadScroll += (0.15 + energy * 4.5 + bass * 3) * dt;
+      this.roadScroll += (0.2 + energy * 2.2 + bass * 1.5) * dt;
       const scroll = this.roadScroll;
 
-      const rows = 14;
-      const cols = 16; // lanes across (half left / half right of center)
+      const rows = 12;
+      const halfCols = 10; // lanes each side of center
+      const totalCols = halfCols * 2;
 
-      // filled perspective cells
-      for (let row = 0; row < rows; row++) {
-        // row depth 0 at horizon → 1 at bottom, with scroll
+      // smoothed fill level per lane (0 empty → 1 full color)
+      if (!this.roadFill || this.roadFill.length !== totalCols) {
+        this.roadFill = new Float32Array(totalCols);
+      }
+      for (let c = 0; c < totalCols; c++) {
+        const tLane = c / (totalCols - 1);
+        // boost spectrum so quiet music still paints something
+        let spec = binAt(a.freq, a.bins, tLane, 1);
+        // ignore sensitivity blow-up; use gentle boost
+        spec = Math.pow(clamp(spec, 0, 1), 0.65);
+        const centerBoost = 1 - Math.abs(tLane - 0.5) * 0.5;
+        const target = clamp(
+          spec * 1.1 + energy * 0.55 + bass * 0.45 * centerBoost + mid * 0.2,
+          0,
+          1
+        );
+        this.roadFill[c] = lerp(this.roadFill[c], target, 0.18);
+      }
+
+      // Draw every cell: dark hole + color fill rising from the near edge
+      for (let row = rows - 1; row >= 0; row--) {
         const r0 = (row + (scroll % 1)) / rows;
         const r1 = (row + 1 + (scroll % 1)) / rows;
-        if (r1 <= 0) continue;
-        const y0 = horizon + Math.pow(clamp(r0, 0, 1.2), 1.65) * groundH;
-        const y1 = horizon + Math.pow(clamp(r1, 0, 1.2), 1.65) * groundH;
-        if (y0 > h && y1 > h) continue;
+        const y0 = horizon + Math.pow(clamp(r0, 0, 1.15), 1.55) * groundH;
+        const y1 = horizon + Math.pow(clamp(r1, 0, 1.15), 1.55) * groundH;
+        if (y1 < horizon - 2) continue;
 
-        // how wide the road is at each depth
-        const widen0 = 0.04 + clamp(r0, 0, 1) * 0.96;
-        const widen1 = 0.04 + clamp(r1, 0, 1) * 0.96;
+        const widen0 = 0.05 + clamp(r0, 0, 1) * 0.95;
+        const widen1 = 0.05 + clamp(r1, 0, 1) * 0.95;
+        // rows nearer camera fill a bit more (liquid pooling toward you)
+        const depthBoost = 0.15 + clamp(r0, 0, 1) * 0.35;
 
-        for (let c = -cols; c < cols; c++) {
-          const tLane = (c + cols) / (cols * 2 - 1); // 0..1 across
-          // spectrum maps left→right
-          const spec = binAt(a.freq, a.bins, tLane, a.sensitivity);
-          const rowBoost = 0.15 + Math.pow(clamp(r0, 0, 1), 0.8) * 0.5;
-          const fill = clamp(spec * 1.35 + bass * 0.25 * (1 - Math.abs(c) / cols), 0, 1.2);
+        for (let c = 0; c < totalCols; c++) {
+          const lane = c - halfCols; // -halfCols .. halfCols-1
+          const tLane = c / (totalCols - 1);
 
-          // skip empty cells for a cleaner look when quiet
-          if (fill < 0.06 && energy < 0.08) {
-            // faint empty pavement
-            if ((c + row) % 2 === 0) {
-              const x0a = w / 2 + (c / cols) * (w * 0.5) * widen0;
-              const x0b = w / 2 + ((c + 1) / cols) * (w * 0.5) * widen0;
-              const x1a = w / 2 + (c / cols) * (w * 0.5) * widen1;
-              const x1b = w / 2 + ((c + 1) / cols) * (w * 0.5) * widen1;
-              g.fillStyle = "rgba(40, 20, 70, 0.25)";
-              g.beginPath();
-              g.moveTo(x0a, y0); g.lineTo(x0b, y0); g.lineTo(x1b, y1); g.lineTo(x1a, y1);
-              g.closePath();
-              g.fill();
-            }
-            continue;
-          }
+          const x0a = w / 2 + (lane / halfCols) * (w * 0.5) * widen0;
+          const x0b = w / 2 + ((lane + 1) / halfCols) * (w * 0.5) * widen0;
+          const x1a = w / 2 + (lane / halfCols) * (w * 0.5) * widen1;
+          const x1b = w / 2 + ((lane + 1) / halfCols) * (w * 0.5) * widen1;
 
-          const x0a = w / 2 + (c / cols) * (w * 0.5) * widen0;
-          const x0b = w / 2 + ((c + 1) / cols) * (w * 0.5) * widen0;
-          const x1a = w / 2 + (c / cols) * (w * 0.5) * widen1;
-          const x1b = w / 2 + ((c + 1) / cols) * (w * 0.5) * widen1;
-
-          const depth = clamp(r0, 0, 1);
-          const hue = 300 + tLane * 50 - fill * 30 + mid * 20;
-          const light = 28 + fill * 42 * rowBoost + depth * 10;
-          const alpha = 0.35 + fill * 0.55;
-
-          g.fillStyle = hsl(hue, 90, light, alpha);
+          // 1) empty hole (always)
+          g.fillStyle = ((c + row) % 2 === 0) ? "#0c0618" : "#0a0414";
           g.beginPath();
           g.moveTo(x0a, y0);
           g.lineTo(x0b, y0);
@@ -485,81 +499,94 @@
           g.closePath();
           g.fill();
 
-          // hot top edge when cell is loud
-          if (fill > 0.45) {
-            g.strokeStyle = hsl(hue + 30, 100, 75, 0.35 + fill * 0.4);
-            g.lineWidth = 1;
+          // 2) color fill amount for this cell
+          let fill = clamp(this.roadFill[c] + depthBoost * energy, 0, 1);
+          // row wave: bass floods from horizon outward in bands
+          const band = 0.5 + 0.5 * Math.sin(row * 0.7 - this.t * 2 + bass * 4);
+          fill = clamp(fill * (0.75 + band * 0.45), 0, 1);
+
+          if (fill > 0.02) {
+            // fill from the NEAR edge (y1 / bottom of cell) upward toward horizon
+            const fy = y1 + (y0 - y1) * fill; // top of the liquid
+            // interpolate x at fill height
+            const u = fill; // 0 at bottom, 1 at top of cell
+            const xl = x1a + (x0a - x1a) * u;
+            const xr = x1b + (x0b - x1b) * u;
+
+            const hue = 280 + tLane * 70 + fill * 25 + mid * 20;
+            const light = 35 + fill * 35 + bass * 10;
+            g.fillStyle = hsl(hue, 92, light, 0.55 + fill * 0.4);
             g.beginPath();
-            g.moveTo(x0a, y0);
-            g.lineTo(x0b, y0);
+            g.moveTo(xl, fy);
+            g.lineTo(xr, fy);
+            g.lineTo(x1b, y1);
+            g.lineTo(x1a, y1);
+            g.closePath();
+            g.fill();
+
+            // bright meniscus on the fill surface
+            g.strokeStyle = hsl(hue + 20, 100, 75, 0.4 + fill * 0.5);
+            g.lineWidth = 1.5;
+            g.beginPath();
+            g.moveTo(xl, fy);
+            g.lineTo(xr, fy);
             g.stroke();
           }
+
+          // 3) neon cell rim (the "hole" outline)
+          g.strokeStyle = hsl(310, 90, 65, 0.35 + fill * 0.4 + energy * 0.2);
+          g.lineWidth = 1;
+          g.beginPath();
+          g.moveTo(x0a, y0);
+          g.lineTo(x0b, y0);
+          g.lineTo(x1b, y1);
+          g.lineTo(x1a, y1);
+          g.closePath();
+          g.stroke();
         }
       }
 
-      // center highway stripe — solid filled spectrum strip
-      const stripCols = 32;
-      for (let i = 0; i < stripCols; i++) {
-        const t = i / (stripCols - 1);
-        const v = binAt(a.freq, a.bins, t, a.sensitivity);
-        const y = horizon + Math.pow(t, 1.5) * groundH * 0.92;
-        const half = 4 + t * 18 + v * 22;
-        const hh = 3 + v * 10;
-        g.fillStyle = hsl(190 + v * 40, 95, 60 + v * 20, 0.25 + v * 0.65);
-        g.fillRect(w / 2 - half, y, half * 2, hh);
-      }
-
-      // perspective grid lines on top (thin, neon)
-      g.strokeStyle = hsl(310, 95, 70, 0.25 + energy * 0.35);
-      g.lineWidth = 1;
-      for (let i = 0; i <= rows; i++) {
-        const r = (i + (scroll % 1)) / rows;
-        if (r < 0 || r > 1.05) continue;
-        const y = horizon + Math.pow(r, 1.65) * groundH;
-        g.beginPath();
-        g.moveTo(0, y);
-        g.lineTo(w, y);
-        g.stroke();
-      }
-      for (let c = -cols; c <= cols; c++) {
-        g.beginPath();
-        g.moveTo(w / 2 + (c / cols) * 8, horizon);
-        g.lineTo(w / 2 + (c / cols) * w * 0.5, h);
-        g.stroke();
-      }
-
-      // side rails glow with bass
-      g.strokeStyle = hsl(320, 100, 65, 0.2 + bass * 0.55);
-      g.lineWidth = 2 + bass * 3;
+      // center dashed line
+      g.strokeStyle = hsl(50, 100, 70, 0.35 + energy * 0.4);
+      g.lineWidth = 2;
+      g.setLineDash([8, 12]);
       g.beginPath();
-      g.moveTo(w / 2 - 6, horizon);
+      g.moveTo(w / 2, horizon + 4);
+      g.lineTo(w / 2, h);
+      g.stroke();
+      g.setLineDash([]);
+
+      // side rails
+      g.strokeStyle = hsl(320, 100, 65, 0.25 + bass * 0.5);
+      g.lineWidth = 2 + bass * 2;
+      g.beginPath();
+      g.moveTo(w / 2 - 4, horizon);
       g.lineTo(0, h);
-      g.moveTo(w / 2 + 6, horizon);
+      g.moveTo(w / 2 + 4, horizon);
       g.lineTo(w, h);
       g.stroke();
     }
 
-    /* ---------- SCOPE ---------- */
+    /* ---------- SCOPE (calm fixed-scale CRT) ---------- */
     draw_scope(g, w, h, a) {
       g.fillStyle = "#0a1408";
       g.fillRect(0, 0, w, h);
-      // grid
-      g.strokeStyle = "rgba(40, 120, 40, 0.22)";
+      g.strokeStyle = "rgba(40, 120, 40, 0.2)";
       g.lineWidth = 1;
-      for (let x = 0; x < w; x += 32) {
+      for (let x = 0; x < w; x += 40) {
         g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
       }
-      for (let y = 0; y < h; y += 32) {
+      for (let y = 0; y < h; y += 40) {
         g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
       }
-      // crosshair
-      g.strokeStyle = "rgba(60, 160, 60, 0.3)";
+      g.strokeStyle = "rgba(60, 160, 60, 0.28)";
       g.beginPath();
       g.moveTo(0, h / 2); g.lineTo(w, h / 2);
       g.moveTo(w / 2, 0); g.lineTo(w / 2, h);
       g.stroke();
 
-      const points = Math.min(256, Math.max(64, Math.floor(w / 3)));
+      // fewer points + heavy smoothing
+      const points = Math.min(128, Math.max(48, Math.floor(w / 6)));
       if (!this.scopeBuf || this.scopeBuf.length !== points) {
         this.scopeBuf = new Float32Array(points);
       }
@@ -567,9 +594,9 @@
       const time = a.time;
       const n = time ? time.length : 0;
       let peak = 0;
+      let mean = 0;
 
       if (n > 0) {
-        // Downsample + box average so HF capture noise doesn't shred the trace
         const step = n / points;
         for (let i = 0; i < points; i++) {
           const start = Math.floor(i * step);
@@ -581,70 +608,64 @@
             count++;
           }
           const raw = count ? sum / count : 0;
-          // smooth toward new sample
-          this.scopeBuf[i] = lerp(this.scopeBuf[i], raw, 0.45);
+          // heavy low-pass — kills HF thrash from capture
+          this.scopeBuf[i] = lerp(this.scopeBuf[i], raw, 0.12);
           peak = Math.max(peak, Math.abs(this.scopeBuf[i]));
+          mean += this.scopeBuf[i];
         }
+        mean /= points;
       } else {
         for (let i = 0; i < points; i++) {
-          this.scopeBuf[i] = lerp(this.scopeBuf[i], 0, 0.12);
+          this.scopeBuf[i] = lerp(this.scopeBuf[i], 0, 0.08);
         }
-        peak = 0;
       }
 
-      // Auto-gain with noise floor: silence → flat; music → readable amplitude
-      const noiseFloor = 0.04;
-      const target = 0.55; // aim for this fraction of half-height
-      let desiredGain = 1;
-      if (peak > noiseFloor) {
-        desiredGain = target / peak;
-      } else {
-        desiredGain = 0; // gate out hiss
+      // remove DC offset
+      for (let i = 0; i < points; i++) {
+        // don't mutate permanently; subtract mean when drawing
       }
-      desiredGain = clamp(desiredGain, 0, 4);
-      // mild sensitivity influence (not a raw multiply that blows up noise)
-      desiredGain *= 0.75 + (a.sensitivity || 1) * 0.25;
-      this.scopeGain = lerp(this.scopeGain, desiredGain, 0.12);
 
-      // secondary soft gate from overall energy
-      const eGate = gate(a.energy, 0.03, 2.2);
-      const ampScale = this.scopeGain * (0.15 + eGate * 0.85);
+      // AGC that ONLY turns DOWN when too hot — never boosts noise
+      const noiseFloor = 0.08;
+      let atten = 1;
+      if (peak > 0.35) {
+        atten = 0.35 / peak;
+      }
+      if (peak < noiseFloor) {
+        atten = 0; // flat when essentially silent/hiss
+      }
+      this.scopeGain = lerp(this.scopeGain, atten, 0.1);
+
+      // fixed gentle vertical scale (was auto-boosting → crazy)
+      const baseScale = 0.18; // fraction of half-height at full signal
+      const sens = clamp((a.sensitivity || 1), 0.5, 1.5);
+      const ampScale = this.scopeGain * baseScale * (0.85 + sens * 0.15);
 
       g.beginPath();
       for (let i = 0; i < points; i++) {
         const x = (i / (points - 1)) * w;
-        // soft compression keeps kicks from clipping the CRT face
-        let v = this.scopeBuf[i] * ampScale;
+        let v = (this.scopeBuf[i] - mean) * ampScale;
+        // hard compress residual spikes
         const sign = v < 0 ? -1 : 1;
-        v = sign * Math.pow(Math.min(1, Math.abs(v)), 0.72);
-        // tiny idle breathing only when nearly silent (not wild)
-        if (eGate < 0.08 && peak < noiseFloor) {
-          v += Math.sin(this.t * 1.2 + i * 0.08) * 0.012;
-        }
-        const y = h / 2 + v * (h * 0.38);
+        v = sign * Math.pow(Math.min(1, Math.abs(v) * 3), 1.15) / 3;
+        // clamp hard so it never leaves the CRT face
+        v = clamp(v, -0.42, 0.42);
+        const y = h / 2 + v * h;
         if (i === 0) g.moveTo(x, y);
         else g.lineTo(x, y);
       }
 
-      const glow = 4 + eGate * 10;
       g.strokeStyle = "#5dff7a";
       g.lineWidth = 2;
       g.shadowColor = "#3dff5a";
-      g.shadowBlur = glow;
+      g.shadowBlur = 6;
       g.stroke();
       g.shadowBlur = 0;
-      g.globalAlpha = 0.3;
+      g.globalAlpha = 0.25;
       g.strokeStyle = "#a8ffb8";
       g.lineWidth = 1;
       g.stroke();
       g.globalAlpha = 1;
-
-      // modest peak markers (not jumpy)
-      if (eGate > 0.15) {
-        g.fillStyle = hsl(120, 80, 55, 0.35 + eGate * 0.3);
-        g.fillRect(8, h / 2 - eGate * h * 0.15, 4, eGate * h * 0.3);
-        g.fillRect(w - 12, h / 2 - eGate * h * 0.15, 4, eGate * h * 0.3);
-      }
     }
 
     /* ---------- STARFIELD ---------- */
@@ -825,41 +846,48 @@
       }
     }
 
-    /* ---------- TUNNEL ---------- */
+    /* ---------- TUNNEL (slow, audio-gated pulse — not a rave) ---------- */
     draw_tunnel(g, w, h, a, dt) {
-      // stronger trail so motion feels intentional, not strobing
-      g.fillStyle = "rgba(4, 2, 14, 0.55)";
+      g.fillStyle = "rgba(4, 2, 14, 0.65)";
       g.fillRect(0, 0, w, h);
       if (!this.stars.length) this.seedForMode("tunnel");
 
       const cx = w / 2;
       const cy = h / 2;
-      const energy = gate(a.energy, 0.05, 1.6);
-      const bass = gate(a.bass, 0.06, 1.5);
-      const mid = gate(a.mid, 0.05, 1.5);
-      const treble = gate(a.treble, 0.04, 1.4);
+      const lv = this.smoothLevels(a);
+      const energy = lv.e;
+      const bass = lv.b;
+      const mid = lv.m;
 
-      // Motion is driven almost entirely by audio (tiny crawl when quiet)
-      const scrollSpeed = 0.04 + energy * 0.55 + bass * 0.35;
-      const spinSpeed = mid * 0.55 + treble * 0.25;
+      // Almost static rings; only creep when music is clearly present
+      const scrollSpeed = energy * 0.12 + bass * 0.08; // was ~0.5+
+      const spinSpeed = mid * 0.08; // barely turns
       this.tunnelScroll += scrollSpeed * dt;
       this.tunnelSpin += spinSpeed * dt;
 
-      const layers = 12;
-      for (let i = layers; i >= 0; i--) {
-        let t = (i / layers + this.tunnelScroll * 0.35) % 1;
-        if (t < 0) t += 1;
-        // ease: denser near the viewer
-        const depth = t * t;
-        const pulse = 1 + bass * 0.12 * Math.sin(i + this.t);
-        const r = depth * Math.min(w, h) * 0.68 * pulse;
-        if (r < 4) continue;
+      const layers = 10;
+      for (let i = 0; i < layers; i++) {
+        // fixed spacing with tiny scroll offset
+        const base = (i + 1) / (layers + 1);
+        let t = (base + this.tunnelScroll * 0.08) % 1;
+        if (t < 0.02) t = 0.02;
+        const depth = t;
+        // gentle breathing, not thrash
+        const pulse = 1 + bass * 0.06;
+        const r = depth * Math.min(w, h) * 0.62 * pulse;
+        if (r < 6) continue;
 
-        // each ring's brightness from a spectrum slice (not constant thrash)
-        const ringV = binAt(a.freq, a.bins, 1 - t, a.sensitivity);
-        const alpha = 0.08 + depth * 0.25 + ringV * 0.55 + energy * 0.2;
-        const hue = 270 + i * 10 + mid * 30 + ringV * 40;
-        const lw = 1.2 + depth * 2.5 + ringV * 3 + bass * 1.5;
+        // spectrum for brightness only — capped hard, no sensitivity multiply
+        let ringV = 0;
+        if (a.freq && a.bins) {
+          const idx = clamp(Math.floor((1 - depth) * (a.bins - 1)), 0, a.bins - 1);
+          ringV = Math.pow(a.freq[idx] / 255, 1.4); // compress loud bins
+        }
+        ringV = clamp(ringV, 0, 1);
+
+        const alpha = 0.12 + ringV * 0.35 + energy * 0.2 + bass * 0.12;
+        const hue = 275 + i * 8 + mid * 15;
+        const lw = 1 + depth * 1.5 + ringV * 1.5 + bass * 0.8;
 
         g.beginPath();
         const sides = 6;
@@ -870,39 +898,38 @@
           if (s === 0) g.moveTo(x, y);
           else g.lineTo(x, y);
         }
-        g.strokeStyle = hsl(hue, 95, 58 + ringV * 15, clamp(alpha, 0, 0.95));
+        g.strokeStyle = hsl(hue, 90, 55, clamp(alpha, 0, 0.75));
         g.lineWidth = lw;
         g.stroke();
       }
 
-      // center void + soft bass glow
-      const voidR = 18 + bass * 20;
-      const voidGrad = g.createRadialGradient(cx, cy, 0, cx, cy, voidR * 3);
-      voidGrad.addColorStop(0, hsl(300, 80, 50, 0.15 + bass * 0.35));
-      voidGrad.addColorStop(0.5, hsl(260, 70, 30, 0.08));
+      // soft center glow
+      const voidGrad = g.createRadialGradient(cx, cy, 0, cx, cy, 50 + bass * 30);
+      voidGrad.addColorStop(0, hsl(300, 70, 45, 0.08 + bass * 0.2));
       voidGrad.addColorStop(1, "transparent");
       g.fillStyle = voidGrad;
       g.beginPath();
-      g.arc(cx, cy, voidR * 3, 0, Math.PI * 2);
+      g.arc(cx, cy, 80, 0, Math.PI * 2);
       g.fill();
 
-      // sparse speed dots — only move when there's energy
-      const speed = (0.2 + energy * 6 + bass * 4) * dt * 60;
-      for (const s of this.stars) {
-        if (speed > 0.05) s.z -= speed;
+      // few slow stars
+      const speed = energy * 1.2 * dt * 60; // much slower
+      for (let si = 0; si < this.stars.length; si++) {
+        const s = this.stars[si];
+        // only use a subset
+        if (si % 3 !== 0) continue;
+        if (speed > 0.02) s.z -= speed;
         if (s.z <= 1) {
           s.x = (Math.random() - 0.5) * w;
           s.y = (Math.random() - 0.5) * h;
           s.z = w;
         }
-        const k = 90 / s.z;
+        const k = 100 / s.z;
         const x = cx + s.x * k;
         const y = cy + s.y * k;
         if (x < 0 || x > w || y < 0 || y > h) continue;
-        const aDot = (0.15 + energy * 0.5) * (1 - s.z / w);
-        g.fillStyle = hsl(190 + treble * 40, 90, 70, aDot);
-        const sz = 1 + (1 - s.z / w) * 2;
-        g.fillRect(x, y, sz, sz);
+        g.fillStyle = hsl(200, 80, 70, 0.12 + energy * 0.35);
+        g.fillRect(x, y, 1.5, 1.5);
       }
     }
 
