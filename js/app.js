@@ -22,6 +22,7 @@
   const btnListen = $("btnListen");
   const listenIcon = $("listenIcon");
   const btnMic = $("btnMic");
+  const btnDisconnect = $("btnDisconnect");
   const sensSlider = $("sensSlider");
   const sensVal = $("sensVal");
   const sceneRail = $("sceneRail");
@@ -105,41 +106,81 @@
     sceneModal.setAttribute("aria-hidden", "true");
   }
 
-  function setLiveUI(live) {
+  function setLiveUI() {
+    const live = audio.live;
+    const held = audio.hasSystemShare() || audio.hasMic();
+    const paused = audio.paused && held;
+
     document.body.classList.toggle("is-live", live);
+    document.body.classList.toggle("is-held", held && !live);
     btnListen.classList.toggle("is-playing", live);
-    listenIcon.textContent = live ? "■" : "▶";
+    btnListen.classList.toggle("is-paused", paused);
+    // Live → pause icon; paused/held or idle → play
+    listenIcon.textContent = live ? "❚❚" : "▶";
     brandDot.classList.toggle("live", live);
+    brandDot.classList.toggle("held", paused);
     eq.classList.toggle("live", live);
     lcdStatus.classList.toggle("playing", live);
+
     if (live) {
-      lcdStatus.textContent = audio.micEnabled && audio.systemStream
-        ? "SYS+MIC"
-        : audio.micEnabled && !audio.systemStream
-          ? "MIC"
-          : "LIVE";
+      lcdStatus.textContent =
+        audio.micEnabled && audio.hasSystemShare()
+          ? "SYS+MIC"
+          : audio.micEnabled && !audio.hasSystemShare()
+            ? "MIC"
+            : "LIVE";
+    } else if (paused) {
+      lcdStatus.textContent = "PAUSED";
     } else {
       lcdStatus.textContent = "READY";
     }
+
+    // Disconnect control only when a share/mic is held
+    if (btnDisconnect) {
+      btnDisconnect.hidden = !held;
+      btnDisconnect.setAttribute("aria-hidden", held ? "false" : "true");
+    }
   }
 
+  /**
+   * Big button: start (prompt once) → pause (keep share) → resume (no prompt).
+   * Use disconnect chip (or browser "Stop sharing") to fully release.
+   */
   async function toggleListen() {
-    if (audio.live && audio.systemStream) {
-      audio.stopAll();
-      btnMic.setAttribute("aria-pressed", "false");
-      setLiveUI(false);
+    // Currently analyzing → pause, keep MediaStream so we don't re-prompt
+    if (audio.live) {
+      audio.pause();
+      setLiveUI();
       return;
     }
+
+    // Paused with live tracks → resume without getDisplayMedia
+    if (audio.paused && (audio.hasSystemShare() || audio.hasMic())) {
+      audio.resume();
+      setLiveUI();
+      return;
+    }
+
+    // No share yet → request screen/tab audio (one permission flow)
     lcdStatus.textContent = "SHARE…";
     try {
-      await audio.startSystem();
-      setLiveUI(true);
+      const result = await audio.startSystem();
+      setLiveUI();
+      if (result && result.reused) {
+        // no-op hint
+      }
     } catch (err) {
       console.warn(err);
       lcdStatus.textContent = "ERR";
       alert(err.message || String(err));
-      setLiveUI(false);
+      setLiveUI();
     }
+  }
+
+  function disconnectAll() {
+    audio.stopAll();
+    btnMic.setAttribute("aria-pressed", "false");
+    setLiveUI();
   }
 
   async function toggleMic() {
@@ -147,13 +188,11 @@
     try {
       await audio.setMicEnabled(next);
       btnMic.setAttribute("aria-pressed", next ? "true" : "false");
-      setLiveUI(audio.live);
-      if (next && !audio.systemStream) {
-        lcdStatus.textContent = "MIC";
-      }
+      setLiveUI();
     } catch (err) {
       btnMic.setAttribute("aria-pressed", "false");
       alert(err.message || String(err));
+      setLiveUI();
     }
   }
 
@@ -234,9 +273,13 @@
   audio.setSensitivity(Number(sensSlider.value));
 
   audio.onEnded(() => {
-    setLiveUI(false);
-    btnMic.setAttribute("aria-pressed", "false");
+    btnMic.setAttribute("aria-pressed", audio.hasMic() ? "true" : "false");
+    setLiveUI();
   });
+
+  if (btnDisconnect) {
+    btnDisconnect.addEventListener("click", disconnectAll);
+  }
 
   document.addEventListener("keydown", (e) => {
     if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
@@ -253,6 +296,8 @@
       document.body.classList.toggle("player-collapsed");
     } else if (e.key === "m" || e.key === "M") {
       toggleMic();
+    } else if (e.key === "x" || e.key === "X") {
+      if (audio.hasSystemShare() || audio.hasMic()) disconnectAll();
     } else if (e.key === "g" || e.key === "G") {
       if (sceneModal.hidden) openModal();
       else closeModal();
@@ -303,6 +348,7 @@
   buildRail();
   buildModal();
   setMode(modeFromUrl(), { skipUrl: false });
+  setLiveUI();
   resize();
   raf = requestAnimationFrame(loop);
 })();

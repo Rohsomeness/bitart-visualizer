@@ -161,6 +161,36 @@ body.is-live .idle-hint {
   color: var(--muted);
 }
 
+.idle-note {
+  font-family: var(--font-pixel);
+  font-size: 5px;
+  color: var(--muted);
+  opacity: 0.65;
+  letter-spacing: 0.3px;
+  max-width: 280px;
+  margin: 4px auto 0;
+  line-height: 1.6;
+}
+
+.brand-dot.held {
+  background: #ffd36a;
+  box-shadow: 0 0 8px #ffd36a;
+}
+
+.btn-play.is-paused {
+  background: linear-gradient(160deg, #ffe08a 0%, var(--warm) 40%, #e0a040 100%);
+  box-shadow:
+    0 4px 0 #b07820,
+    0 7px 12px rgba(0, 0, 0, 0.4),
+    inset 0 2px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.12);
+  color: #4a3010;
+}
+
+.btn-disconnect {
+  color: #5a2018 !important;
+}
+
 @keyframes floaty {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-8px); }

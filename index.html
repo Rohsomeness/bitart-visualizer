@@ -24,7 +24,8 @@
       <div class="idle-hint" id="idleHint">
         <div class="idle-pixel">♬</div>
         <p class="idle-title">BITART VISUALIZER</p>
-        <p class="idle-sub">tap LISTEN to capture system audio</p>
+        <p class="idle-sub">tap LISTEN · share a tab with audio</p>
+        <p class="idle-note">browsers only expose system audio via the share picker</p>
       </div>
     </div>
 
@@ -81,14 +82,15 @@
             <span class="slider-val" id="sensVal">100</span>
           </label>
           <div class="toggle-row">
-            <button type="button" class="btn btn-chip" id="btnMic" aria-pressed="false" title="Also listen via mic">🎙</button>
+            <button type="button" class="btn btn-chip" id="btnMic" aria-pressed="false" title="Also listen via mic (M)">🎙</button>
+            <button type="button" class="btn btn-chip btn-disconnect" id="btnDisconnect" hidden aria-hidden="true" title="End share (releases permission)">⏏</button>
             <button type="button" class="btn btn-chip" id="btnFs" title="Fullscreen">⛶</button>
           </div>
         </div>
 
         <footer class="player-footer">
-          <span class="hint">Space listen · ← → modes · F fullscreen · H hide · M mic</span>
-          <span class="hint-mobile">Space listen · ▦ all modes · H hide</span>
+          <span class="hint">Space pause/resume · ⏏ end share · ← → modes · F full · H hide · M mic</span>
+          <span class="hint-mobile">Space pause · ⏏ end share · ▦ modes</span>
         </footer>
       </div>
     </div>

@@ -1,4 +1,10 @@
-/* Bitart Visualizer — system audio + optional mic capture */
+/* Bitart Visualizer — system audio + optional mic capture
+ *
+ * Why screen share? Browsers have no silent "system audio" API for websites.
+ * Tab/window/system audio is only exposed through getDisplayMedia (the same
+ * picker as screen sharing), with an optional audio track. Mic is separate
+ * (getUserMedia). We never play the captured audio back — analysis only.
+ */
 (function (global) {
   "use strict";
 
@@ -18,9 +24,13 @@
       this.systemGain = null;
       this.micGain = null;
       this.micEnabled = false;
+      /** True while actively feeding the analyser (not paused). */
       this.live = false;
+      /** Share is held but visualizer is paused (no re-prompt on resume). */
+      this.paused = false;
       this.sensitivity = 1;
       this._onEnded = null;
+      this._displayStream = null; // original getDisplayMedia stream (may include video)
     }
 
     async ensureContext() {
@@ -37,7 +47,7 @@
         this.merger = this.ctx.createGain();
         this.merger.gain.value = 1;
         this.merger.connect(this.analyser);
-        // Analyser only — no speakers (avoid feedback / double audio)
+        // Analyser only — not connected to destination (no feedback / double audio)
       }
       if (this.ctx.state === "suspended") {
         await this.ctx.resume();
@@ -45,18 +55,38 @@
       return this.ctx;
     }
 
+    /** System/tab share still open (track live). */
+    hasSystemShare() {
+      const t = this.systemStream && this.systemStream.getAudioTracks()[0];
+      return !!(t && t.readyState === "live");
+    }
+
+    hasMic() {
+      const t = this.micStream && this.micStream.getAudioTracks()[0];
+      return !!(t && t.readyState === "live");
+    }
+
     /**
-     * Primary: capture tab/window/system audio via getDisplayMedia.
-     * User must check "Share audio" in the browser picker.
+     * Start system/tab audio capture, or resume if share is already held.
+     * getDisplayMedia is only called when there is no active share.
      */
     async startSystem() {
       await this.ensureContext();
-      this.stopSystemOnly();
+
+      if (this.hasSystemShare()) {
+        this._setSystemMuted(false);
+        this.paused = false;
+        this.live = true;
+        return { reused: true };
+      }
+
+      // Full teardown only if a dead/partial stream lingers
+      this._teardownSystem(false);
 
       let stream;
       try {
         stream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
+          video: true, // required by the API even when we only want audio
           audio: {
             echoCancellation: false,
             noiseSuppression: false,
@@ -80,24 +110,51 @@
         );
       }
 
-      // We only need audio for analysis; stop video to save resources
-      stream.getVideoTracks().forEach((t) => t.stop());
+      this._displayStream = stream;
 
-      this.systemStream = new MediaStream(audioTracks);
+      // Prefer to keep video track alive so some browsers keep the share session stable;
+      // we never attach video to the DOM. Disable it to save CPU.
+      stream.getVideoTracks().forEach((t) => {
+        t.enabled = false;
+      });
+
+      this.systemStream = new MediaStream([audioTracks[0]]);
       this.systemSource = this.ctx.createMediaStreamSource(this.systemStream);
       this.systemGain = this.ctx.createGain();
       this.systemGain.gain.value = 1;
       this.systemSource.connect(this.systemGain);
       this.systemGain.connect(this.merger);
 
-      audioTracks[0].addEventListener("ended", () => {
-        this.stopSystemOnly();
-        if (!this.micEnabled || !this.micStream) {
-          this.live = false;
-          if (typeof this._onEnded === "function") this._onEnded();
-        }
-      });
+      const onTrackEnded = () => {
+        // Browser "Stop sharing" or track death — full release
+        this._teardownSystem(true);
+        this._recomputeLive();
+        if (typeof this._onEnded === "function") this._onEnded();
+      };
+      audioTracks[0].addEventListener("ended", onTrackEnded);
+      stream.getVideoTracks().forEach((t) => t.addEventListener("ended", onTrackEnded));
 
+      this.paused = false;
+      this.live = true;
+      return { reused: false };
+    }
+
+    /** Pause analysis; keep the share so resume does not re-prompt. */
+    pause() {
+      this.paused = true;
+      this.live = false;
+      this._setSystemMuted(true);
+      if (this.micGain) this.micGain.gain.value = 0;
+    }
+
+    /** Resume after pause without re-requesting permission. */
+    resume() {
+      if (!this.hasSystemShare() && !this.hasMic()) {
+        return false;
+      }
+      this.paused = false;
+      this._setSystemMuted(false);
+      if (this.micGain && this.micEnabled) this.micGain.gain.value = 1.1;
       this.live = true;
       return true;
     }
@@ -107,7 +164,11 @@
       await this.ensureContext();
 
       if (on) {
-        if (this.micStream) return true;
+        if (this.hasMic()) {
+          if (this.micGain) this.micGain.gain.value = this.paused ? 0 : 1.1;
+          if (!this.paused) this.live = true;
+          return true;
+        }
         try {
           this.micStream = await navigator.mediaDevices.getUserMedia({
             audio: {
@@ -123,21 +184,39 @@
         }
         this.micSource = this.ctx.createMediaStreamSource(this.micStream);
         this.micGain = this.ctx.createGain();
-        this.micGain.gain.value = 1.1;
+        this.micGain.gain.value = this.paused ? 0 : 1.1;
         this.micSource.connect(this.micGain);
         this.micGain.connect(this.merger);
-        this.live = true;
+
+        this.micStream.getAudioTracks()[0].addEventListener("ended", () => {
+          this.stopMicOnly();
+          this.micEnabled = false;
+          this._recomputeLive();
+          if (typeof this._onEnded === "function") this._onEnded();
+        });
+
+        if (!this.paused) this.live = true;
         return true;
       }
 
+      // Turn off mic but do not kill system share
       this.stopMicOnly();
-      if (!this.systemStream) {
-        this.live = false;
-      }
+      this._recomputeLive();
       return false;
     }
 
-    stopSystemOnly() {
+    _setSystemMuted(muted) {
+      if (this.systemGain) {
+        this.systemGain.gain.value = muted ? 0 : 1;
+      }
+      if (this.systemStream) {
+        this.systemStream.getAudioTracks().forEach((t) => {
+          t.enabled = !muted;
+        });
+      }
+    }
+
+    _teardownSystem(stopTracks) {
       if (this.systemSource) {
         try { this.systemSource.disconnect(); } catch (_) {}
         this.systemSource = null;
@@ -146,10 +225,21 @@
         try { this.systemGain.disconnect(); } catch (_) {}
         this.systemGain = null;
       }
-      if (this.systemStream) {
-        this.systemStream.getTracks().forEach((t) => t.stop());
-        this.systemStream = null;
+      if (stopTracks) {
+        if (this.systemStream) {
+          this.systemStream.getTracks().forEach((t) => t.stop());
+        }
+        if (this._displayStream) {
+          this._displayStream.getTracks().forEach((t) => t.stop());
+        }
       }
+      this.systemStream = null;
+      this._displayStream = null;
+    }
+
+    stopSystemOnly() {
+      this._teardownSystem(true);
+      this._recomputeLive();
     }
 
     stopMicOnly() {
@@ -167,15 +257,28 @@
       }
     }
 
+    /** Fully release capture (will re-prompt next listen). */
     stopAll() {
-      this.stopSystemOnly();
+      this._teardownSystem(true);
       this.stopMicOnly();
       this.micEnabled = false;
+      this.paused = false;
       this.live = false;
     }
 
+    _recomputeLive() {
+      const any = this.hasSystemShare() || this.hasMic();
+      if (!any) {
+        this.live = false;
+        this.paused = false;
+      } else if (this.paused) {
+        this.live = false;
+      } else {
+        this.live = true;
+      }
+    }
+
     setSensitivity(pct) {
-      // 20–200 slider → multiplier
       this.sensitivity = Math.max(0.2, Math.min(2.5, (pct || 100) / 100));
     }
 
@@ -184,17 +287,21 @@
     }
 
     sample() {
-      if (!this.analyser) {
-        return {
-          freq: null,
-          time: null,
-          bass: 0,
-          mid: 0,
-          treble: 0,
-          energy: 0,
-          bins: 0,
-        };
+      const empty = {
+        freq: null,
+        time: null,
+        bass: 0,
+        mid: 0,
+        treble: 0,
+        energy: 0,
+        bins: 0,
+        sensitivity: this.sensitivity,
+      };
+
+      if (!this.analyser || !this.live || this.paused) {
+        return empty;
       }
+
       this.analyser.getByteFrequencyData(this.freqData);
       this.analyser.getByteTimeDomainData(this.timeData);
 

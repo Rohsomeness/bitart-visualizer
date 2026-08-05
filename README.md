@@ -13,6 +13,20 @@ Sibling to [bitart-ambient](https://github.com/Rohsomeness/bitart-ambient).
 | **System / tab audio** (primary) | Press **Listen** → browser share dialog → pick a tab/window/screen and enable **Share audio** |
 | **Microphone** (toggle) | Press the mic chip (or `M`) — works alone or mixed with system capture |
 
+### Why a screen-share dialog?
+
+Websites **cannot** silently tap your system mixer. There is no `getSystemAudio()` for normal web pages (privacy). The only browser API that can provide tab/window/system audio is [`getDisplayMedia`](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia) — the same permission flow as screen sharing, with audio as an optional track. We only use the **audio** track for analysis (nothing is played back through the page).
+
+Mic audio uses the normal mic permission (`getUserMedia`) and does not need screen share.
+
+### Pause vs end share
+
+| Action | What happens |
+|--------|----------------|
+| **Pause** (big button / Space while live) | Freezes the visualizer but **keeps** the share — resume does **not** re-prompt |
+| **Resume** (big button / Space while paused) | Picks up the existing stream |
+| **End share** (⏏ chip, or browser “Stop sharing”) | Fully releases capture — next Listen will prompt again |
+
 No Spotify required. Pure static site (Web Audio + `getDisplayMedia` / `getUserMedia`).
 
 > Chrome or Edge work best for system audio. Firefox often cannot share tab/system audio.
