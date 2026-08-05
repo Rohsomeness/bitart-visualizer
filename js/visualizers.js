@@ -36,6 +36,12 @@
     return clamp((freq[i] / 255) * (sens || 1), 0, 1.5);
   }
 
+  /** Soft-gate levels so silence stays calm. */
+  function gate(v, floor, mult) {
+    const x = Math.max(0, (v || 0) - floor);
+    return clamp(x * (mult || 1.4), 0, 1);
+  }
+
   class VizEngine {
     constructor(canvas) {
       this.canvas = canvas;
@@ -52,6 +58,11 @@
       this.rings = [];
       this.smoothBars = null;
       this.pulse = 0;
+      this.scopeBuf = null;
+      this.scopeGain = 1;
+      this.tunnelScroll = 0;
+      this.tunnelSpin = 0;
+      this.roadScroll = 0;
       this.initModeState();
     }
 
@@ -61,6 +72,11 @@
       this.rain = [];
       this.smoothBars = null;
       this.pulse = 0;
+      this.scopeBuf = null;
+      this.scopeGain = 1;
+      this.tunnelScroll = 0;
+      this.tunnelSpin = 0;
+      this.roadScroll = 0;
     }
 
     setMode(id) {
@@ -73,7 +89,7 @@
     seedForMode(id) {
       const w = this.w || 800;
       const h = this.h || 450;
-      if (id === "starfield" || id === "tunnel") {
+      if (id === "starfield") {
         this.stars = [];
         for (let i = 0; i < 180; i++) {
           this.stars.push({
@@ -84,17 +100,35 @@
           });
         }
       }
+      if (id === "tunnel") {
+        this.stars = [];
+        this.tunnelScroll = 0;
+        this.tunnelSpin = 0;
+        for (let i = 0; i < 60; i++) {
+          this.stars.push({
+            x: (Math.random() - 0.5) * w,
+            y: (Math.random() - 0.5) * h,
+            z: Math.random() * w,
+            pz: 0,
+          });
+        }
+      }
       if (id === "rain") {
         this.rain = [];
-        for (let i = 0; i < 80; i++) {
+        for (let i = 0; i < 220; i++) {
           this.rain.push({
             x: Math.random() * w,
             y: Math.random() * h,
-            speed: 1 + Math.random() * 4,
-            len: 6 + Math.random() * 18,
-            hue: 280 + Math.random() * 80,
+            speed: 2 + Math.random() * 7,
+            len: 12 + Math.random() * 36,
+            hue: 260 + Math.random() * 100,
+            thick: 1 + Math.random() * 2,
+            trail: 0.4 + Math.random() * 0.6,
           });
         }
+      }
+      if (id === "synthwave") {
+        this.roadScroll = 0;
       }
       if (id === "disco") {
         this.tiles = [];
@@ -240,96 +274,269 @@
 
     /* ---------- RAIN ---------- */
     draw_rain(g, w, h, a, dt) {
-      g.fillStyle = "rgba(8, 4, 16, 0.35)";
+      // heavier trails for a denser matrix feel
+      g.fillStyle = "rgba(6, 2, 14, 0.22)";
       g.fillRect(0, 0, w, h);
       if (!this.rain.length) this.seedForMode("rain");
-      const boost = 1 + (a.energy || 0) * 6;
+
+      const energy = gate(a.energy, 0.04, 1.6);
+      const bass = gate(a.bass, 0.05, 1.5);
+      const treble = gate(a.treble, 0.04, 1.5);
+      const boost = 1.2 + energy * 14 + bass * 8;
+      const wind = (a.mid || 0) * 3;
+
+      // vertical spectrum pillars behind the rain
+      const cols = 24;
+      for (let c = 0; c < cols; c++) {
+        const t = c / (cols - 1);
+        const v = binAt(a.freq, a.bins, t, a.sensitivity);
+        if (v < 0.08) continue;
+        const x = (c + 0.5) * (w / cols);
+        const bh = v * h * 0.85;
+        const grad = g.createLinearGradient(x, h - bh, x, h);
+        grad.addColorStop(0, hsl(280 + t * 60, 95, 60, 0.05));
+        grad.addColorStop(1, hsl(300 + t * 40, 90, 55, 0.18 + v * 0.35));
+        g.fillStyle = grad;
+        g.fillRect(x - w / cols * 0.35, h - bh, (w / cols) * 0.7, bh);
+      }
+
       for (const d of this.rain) {
-        d.y += d.speed * boost * (dt * 60);
-        d.x += Math.sin(this.t + d.y * 0.01) * 0.4;
-        if (d.y > h + 20) {
-          d.y = -20;
+        const colV = binAt(a.freq, a.bins, d.x / w, a.sensitivity);
+        const local = 0.35 + colV * 1.8 + energy * 0.5;
+        d.y += d.speed * boost * local * (dt * 60);
+        d.x += Math.sin(this.t * 2 + d.y * 0.012) * (0.6 + wind) + (Math.random() - 0.5) * treble * 2;
+
+        if (d.y > h + 40) {
+          d.y = -30 - Math.random() * 40;
           d.x = Math.random() * w;
-          d.hue = 260 + Math.random() * 100;
+          d.hue = 250 + Math.random() * 110;
+          d.len = 14 + Math.random() * 40 + energy * 30;
+          d.speed = 2.5 + Math.random() * 8 + bass * 4;
+          // splash
+          if (colV > 0.2 || bass > 0.35) {
+            g.fillStyle = hsl(d.hue, 100, 75, 0.35 + colV * 0.45);
+            g.beginPath();
+            g.arc(d.x, h - 4, 2 + colV * 8 + bass * 6, 0, Math.PI * 2);
+            g.fill();
+          }
         }
-        const v = binAt(a.freq, a.bins, d.x / w, a.sensitivity);
-        g.strokeStyle = hsl(d.hue, 90, 65, 0.4 + v * 0.6);
-        g.lineWidth = 2 + v * 3;
+
+        const v = Math.max(colV, energy * 0.4);
+        const len = d.len * (1.2 + v * 2.8 + bass * 1.2);
+        const alpha = clamp(0.35 + v * 0.65 + treble * 0.2, 0, 1);
+        const lw = d.thick * (1.5 + v * 4 + bass * 2);
+
+        // glow core
+        g.strokeStyle = hsl(d.hue, 95, 72, alpha);
+        g.lineWidth = lw;
+        g.lineCap = "round";
         g.beginPath();
         g.moveTo(d.x, d.y);
-        g.lineTo(d.x, d.y + d.len * (1 + v));
+        g.lineTo(d.x - wind * 0.3, d.y + len);
+        g.stroke();
+
+        // bright head
+        g.fillStyle = hsl(d.hue + 20, 100, 85, alpha);
+        g.fillRect(d.x - lw * 0.4, d.y, lw * 0.8, 3 + v * 4);
+
+        // trailing afterimage
+        g.strokeStyle = hsl(d.hue, 80, 55, alpha * d.trail * 0.45);
+        g.lineWidth = Math.max(1, lw * 0.45);
+        g.beginPath();
+        g.moveTo(d.x, d.y - len * 0.35);
+        g.lineTo(d.x, d.y);
         g.stroke();
       }
-      // bass flash
-      if (a.bass > 0.55) {
-        g.fillStyle = hsl(300, 100, 60, (a.bass - 0.55) * 0.25);
+
+      // bass bloom
+      if (bass > 0.25) {
+        g.fillStyle = hsl(310, 100, 60, (bass - 0.25) * 0.35);
         g.fillRect(0, 0, w, h);
+      }
+      // treble sparkle line at bottom
+      if (a.freq) {
+        g.beginPath();
+        for (let i = 0; i < 48; i++) {
+          const t = i / 47;
+          const v = binAt(a.freq, a.bins, t, a.sensitivity);
+          const x = t * w;
+          const y = h - 6 - v * 40;
+          if (i === 0) g.moveTo(x, y);
+          else g.lineTo(x, y);
+        }
+        g.strokeStyle = hsl(190, 100, 70, 0.35 + treble * 0.4);
+        g.lineWidth = 2;
+        g.stroke();
       }
     }
 
-    /* ---------- SYNTHWAVE ---------- */
-    draw_synthwave(g, w, h, a) {
+    /* ---------- SYNTHWAVE (filled reactive road) ---------- */
+    draw_synthwave(g, w, h, a, dt) {
+      const energy = gate(a.energy, 0.04, 1.5);
+      const bass = gate(a.bass, 0.05, 1.4);
+      const mid = gate(a.mid, 0.04, 1.4);
+      const treble = gate(a.treble, 0.04, 1.5);
+
       // sky
-      const sky = g.createLinearGradient(0, 0, 0, h * 0.55);
-      sky.addColorStop(0, "#1a0a3a");
-      sky.addColorStop(0.5, "#4a1a6a");
+      const sky = g.createLinearGradient(0, 0, 0, h * 0.5);
+      sky.addColorStop(0, "#12062a");
+      sky.addColorStop(0.55, "#4a1a6a");
       sky.addColorStop(1, "#ff6b9d");
       g.fillStyle = sky;
-      g.fillRect(0, 0, w, h * 0.55);
+      g.fillRect(0, 0, w, h * 0.5);
 
       // sun
-      const sunY = h * 0.38 - a.bass * 12;
-      const sunR = Math.min(w, h) * 0.14 + a.mid * 10;
+      const sunY = h * 0.34 - bass * 8;
+      const sunR = Math.min(w, h) * 0.13 + mid * 8;
       const sun = g.createRadialGradient(w / 2, sunY, 0, w / 2, sunY, sunR);
       sun.addColorStop(0, "#ffe566");
-      sun.addColorStop(0.5, "#ff8c42");
+      sun.addColorStop(0.55, "#ff8c42");
       sun.addColorStop(1, "#ff4d6d");
       g.fillStyle = sun;
       g.beginPath();
       g.arc(w / 2, sunY, sunR, 0, Math.PI * 2);
       g.fill();
-      // sun bars
       g.fillStyle = "#4a1a6a";
       for (let i = 0; i < 6; i++) {
-        const yy = sunY - sunR * 0.2 + i * (sunR * 0.28);
-        g.fillRect(w / 2 - sunR, yy, sunR * 2, 3 + i);
+        const yy = sunY - sunR * 0.15 + i * (sunR * 0.26);
+        g.fillRect(w / 2 - sunR, yy, sunR * 2, 2 + i);
       }
 
       // mountains
-      g.fillStyle = "#2a1448";
+      g.fillStyle = "#221038";
       g.beginPath();
-      g.moveTo(0, h * 0.55);
-      for (let x = 0; x <= w; x += 20) {
-        const n = Math.sin(x * 0.02) * 30 + Math.sin(x * 0.05) * 15;
-        g.lineTo(x, h * 0.48 + n - a.treble * 8);
+      g.moveTo(0, h * 0.5);
+      for (let x = 0; x <= w; x += 16) {
+        const n = Math.sin(x * 0.018) * 28 + Math.sin(x * 0.05) * 14;
+        g.lineTo(x, h * 0.44 + n - treble * 6);
       }
-      g.lineTo(w, h * 0.55);
+      g.lineTo(w, h * 0.5);
       g.closePath();
       g.fill();
 
-      // ground
-      g.fillStyle = "#0d0618";
-      g.fillRect(0, h * 0.55, w, h * 0.45);
+      const horizon = h * 0.5;
+      const groundH = h - horizon;
 
-      // perspective grid
-      const horizon = h * 0.55;
-      g.strokeStyle = hsl(310, 90, 65, 0.55 + a.energy * 0.35);
-      g.lineWidth = 1.5;
-      const scroll = (this.t * (40 + a.bass * 80)) % 40;
-      for (let i = 0; i < 16; i++) {
-        const y = horizon + Math.pow(i / 15, 1.8) * (h - horizon) + scroll * 0.4;
-        if (y > h) continue;
+      // dark ground base
+      g.fillStyle = "#080412";
+      g.fillRect(0, horizon, w, groundH);
+
+      // scroll only with music (crawl when very quiet)
+      this.roadScroll += (0.15 + energy * 4.5 + bass * 3) * dt;
+      const scroll = this.roadScroll;
+
+      const rows = 14;
+      const cols = 16; // lanes across (half left / half right of center)
+
+      // filled perspective cells
+      for (let row = 0; row < rows; row++) {
+        // row depth 0 at horizon → 1 at bottom, with scroll
+        const r0 = (row + (scroll % 1)) / rows;
+        const r1 = (row + 1 + (scroll % 1)) / rows;
+        if (r1 <= 0) continue;
+        const y0 = horizon + Math.pow(clamp(r0, 0, 1.2), 1.65) * groundH;
+        const y1 = horizon + Math.pow(clamp(r1, 0, 1.2), 1.65) * groundH;
+        if (y0 > h && y1 > h) continue;
+
+        // how wide the road is at each depth
+        const widen0 = 0.04 + clamp(r0, 0, 1) * 0.96;
+        const widen1 = 0.04 + clamp(r1, 0, 1) * 0.96;
+
+        for (let c = -cols; c < cols; c++) {
+          const tLane = (c + cols) / (cols * 2 - 1); // 0..1 across
+          // spectrum maps left→right
+          const spec = binAt(a.freq, a.bins, tLane, a.sensitivity);
+          const rowBoost = 0.15 + Math.pow(clamp(r0, 0, 1), 0.8) * 0.5;
+          const fill = clamp(spec * 1.35 + bass * 0.25 * (1 - Math.abs(c) / cols), 0, 1.2);
+
+          // skip empty cells for a cleaner look when quiet
+          if (fill < 0.06 && energy < 0.08) {
+            // faint empty pavement
+            if ((c + row) % 2 === 0) {
+              const x0a = w / 2 + (c / cols) * (w * 0.5) * widen0;
+              const x0b = w / 2 + ((c + 1) / cols) * (w * 0.5) * widen0;
+              const x1a = w / 2 + (c / cols) * (w * 0.5) * widen1;
+              const x1b = w / 2 + ((c + 1) / cols) * (w * 0.5) * widen1;
+              g.fillStyle = "rgba(40, 20, 70, 0.25)";
+              g.beginPath();
+              g.moveTo(x0a, y0); g.lineTo(x0b, y0); g.lineTo(x1b, y1); g.lineTo(x1a, y1);
+              g.closePath();
+              g.fill();
+            }
+            continue;
+          }
+
+          const x0a = w / 2 + (c / cols) * (w * 0.5) * widen0;
+          const x0b = w / 2 + ((c + 1) / cols) * (w * 0.5) * widen0;
+          const x1a = w / 2 + (c / cols) * (w * 0.5) * widen1;
+          const x1b = w / 2 + ((c + 1) / cols) * (w * 0.5) * widen1;
+
+          const depth = clamp(r0, 0, 1);
+          const hue = 300 + tLane * 50 - fill * 30 + mid * 20;
+          const light = 28 + fill * 42 * rowBoost + depth * 10;
+          const alpha = 0.35 + fill * 0.55;
+
+          g.fillStyle = hsl(hue, 90, light, alpha);
+          g.beginPath();
+          g.moveTo(x0a, y0);
+          g.lineTo(x0b, y0);
+          g.lineTo(x1b, y1);
+          g.lineTo(x1a, y1);
+          g.closePath();
+          g.fill();
+
+          // hot top edge when cell is loud
+          if (fill > 0.45) {
+            g.strokeStyle = hsl(hue + 30, 100, 75, 0.35 + fill * 0.4);
+            g.lineWidth = 1;
+            g.beginPath();
+            g.moveTo(x0a, y0);
+            g.lineTo(x0b, y0);
+            g.stroke();
+          }
+        }
+      }
+
+      // center highway stripe — solid filled spectrum strip
+      const stripCols = 32;
+      for (let i = 0; i < stripCols; i++) {
+        const t = i / (stripCols - 1);
+        const v = binAt(a.freq, a.bins, t, a.sensitivity);
+        const y = horizon + Math.pow(t, 1.5) * groundH * 0.92;
+        const half = 4 + t * 18 + v * 22;
+        const hh = 3 + v * 10;
+        g.fillStyle = hsl(190 + v * 40, 95, 60 + v * 20, 0.25 + v * 0.65);
+        g.fillRect(w / 2 - half, y, half * 2, hh);
+      }
+
+      // perspective grid lines on top (thin, neon)
+      g.strokeStyle = hsl(310, 95, 70, 0.25 + energy * 0.35);
+      g.lineWidth = 1;
+      for (let i = 0; i <= rows; i++) {
+        const r = (i + (scroll % 1)) / rows;
+        if (r < 0 || r > 1.05) continue;
+        const y = horizon + Math.pow(r, 1.65) * groundH;
         g.beginPath();
         g.moveTo(0, y);
         g.lineTo(w, y);
         g.stroke();
       }
-      for (let i = -12; i <= 12; i++) {
+      for (let c = -cols; c <= cols; c++) {
         g.beginPath();
-        g.moveTo(w / 2 + i * 8, horizon);
-        g.lineTo(w / 2 + i * w * 0.55, h);
+        g.moveTo(w / 2 + (c / cols) * 8, horizon);
+        g.lineTo(w / 2 + (c / cols) * w * 0.5, h);
         g.stroke();
       }
+
+      // side rails glow with bass
+      g.strokeStyle = hsl(320, 100, 65, 0.2 + bass * 0.55);
+      g.lineWidth = 2 + bass * 3;
+      g.beginPath();
+      g.moveTo(w / 2 - 6, horizon);
+      g.lineTo(0, h);
+      g.moveTo(w / 2 + 6, horizon);
+      g.lineTo(w, h);
+      g.stroke();
     }
 
     /* ---------- SCOPE ---------- */
@@ -337,7 +544,7 @@
       g.fillStyle = "#0a1408";
       g.fillRect(0, 0, w, h);
       // grid
-      g.strokeStyle = "rgba(40, 120, 40, 0.25)";
+      g.strokeStyle = "rgba(40, 120, 40, 0.22)";
       g.lineWidth = 1;
       for (let x = 0; x < w; x += 32) {
         g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
@@ -346,42 +553,98 @@
         g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
       }
       // crosshair
-      g.strokeStyle = "rgba(60, 160, 60, 0.35)";
+      g.strokeStyle = "rgba(60, 160, 60, 0.3)";
       g.beginPath();
       g.moveTo(0, h / 2); g.lineTo(w, h / 2);
       g.moveTo(w / 2, 0); g.lineTo(w / 2, h);
       g.stroke();
 
-      g.beginPath();
+      const points = Math.min(256, Math.max(64, Math.floor(w / 3)));
+      if (!this.scopeBuf || this.scopeBuf.length !== points) {
+        this.scopeBuf = new Float32Array(points);
+      }
+
       const time = a.time;
       const n = time ? time.length : 0;
-      if (n) {
-        for (let i = 0; i < n; i++) {
-          const x = (i / (n - 1)) * w;
-          const v = ((time[i] - 128) / 128) * a.sensitivity;
-          const y = h / 2 + v * (h * 0.4);
-          if (i === 0) g.moveTo(x, y);
-          else g.lineTo(x, y);
+      let peak = 0;
+
+      if (n > 0) {
+        // Downsample + box average so HF capture noise doesn't shred the trace
+        const step = n / points;
+        for (let i = 0; i < points; i++) {
+          const start = Math.floor(i * step);
+          const end = Math.min(n, Math.floor((i + 1) * step));
+          let sum = 0;
+          let count = 0;
+          for (let j = start; j < end; j++) {
+            sum += (time[j] - 128) / 128;
+            count++;
+          }
+          const raw = count ? sum / count : 0;
+          // smooth toward new sample
+          this.scopeBuf[i] = lerp(this.scopeBuf[i], raw, 0.45);
+          peak = Math.max(peak, Math.abs(this.scopeBuf[i]));
         }
       } else {
-        for (let i = 0; i < 128; i++) {
-          const x = (i / 127) * w;
-          const y = h / 2 + Math.sin(this.t * 3 + i * 0.2) * 12;
-          if (i === 0) g.moveTo(x, y);
-          else g.lineTo(x, y);
+        for (let i = 0; i < points; i++) {
+          this.scopeBuf[i] = lerp(this.scopeBuf[i], 0, 0.12);
         }
+        peak = 0;
       }
+
+      // Auto-gain with noise floor: silence → flat; music → readable amplitude
+      const noiseFloor = 0.04;
+      const target = 0.55; // aim for this fraction of half-height
+      let desiredGain = 1;
+      if (peak > noiseFloor) {
+        desiredGain = target / peak;
+      } else {
+        desiredGain = 0; // gate out hiss
+      }
+      desiredGain = clamp(desiredGain, 0, 4);
+      // mild sensitivity influence (not a raw multiply that blows up noise)
+      desiredGain *= 0.75 + (a.sensitivity || 1) * 0.25;
+      this.scopeGain = lerp(this.scopeGain, desiredGain, 0.12);
+
+      // secondary soft gate from overall energy
+      const eGate = gate(a.energy, 0.03, 2.2);
+      const ampScale = this.scopeGain * (0.15 + eGate * 0.85);
+
+      g.beginPath();
+      for (let i = 0; i < points; i++) {
+        const x = (i / (points - 1)) * w;
+        // soft compression keeps kicks from clipping the CRT face
+        let v = this.scopeBuf[i] * ampScale;
+        const sign = v < 0 ? -1 : 1;
+        v = sign * Math.pow(Math.min(1, Math.abs(v)), 0.72);
+        // tiny idle breathing only when nearly silent (not wild)
+        if (eGate < 0.08 && peak < noiseFloor) {
+          v += Math.sin(this.t * 1.2 + i * 0.08) * 0.012;
+        }
+        const y = h / 2 + v * (h * 0.38);
+        if (i === 0) g.moveTo(x, y);
+        else g.lineTo(x, y);
+      }
+
+      const glow = 4 + eGate * 10;
       g.strokeStyle = "#5dff7a";
       g.lineWidth = 2;
       g.shadowColor = "#3dff5a";
-      g.shadowBlur = 12;
+      g.shadowBlur = glow;
       g.stroke();
       g.shadowBlur = 0;
-      g.globalAlpha = 0.35;
+      g.globalAlpha = 0.3;
       g.strokeStyle = "#a8ffb8";
       g.lineWidth = 1;
       g.stroke();
       g.globalAlpha = 1;
+
+      // modest peak markers (not jumpy)
+      if (eGate > 0.15) {
+        g.fillStyle = hsl(120, 80, 55, 0.35 + eGate * 0.3);
+        g.fillRect(8, h / 2 - eGate * h * 0.15, 4, eGate * h * 0.3);
+        g.fillRect(w - 12, h / 2 - eGate * h * 0.15, 4, eGate * h * 0.3);
+      }
     }
 
     /* ---------- STARFIELD ---------- */
@@ -564,45 +827,82 @@
 
     /* ---------- TUNNEL ---------- */
     draw_tunnel(g, w, h, a, dt) {
-      g.fillStyle = "rgba(4, 2, 12, 0.4)";
+      // stronger trail so motion feels intentional, not strobing
+      g.fillStyle = "rgba(4, 2, 14, 0.55)";
       g.fillRect(0, 0, w, h);
+      if (!this.stars.length) this.seedForMode("tunnel");
+
       const cx = w / 2;
       const cy = h / 2;
-      const layers = 14;
-      const spin = this.t * (0.4 + a.mid * 1.2);
+      const energy = gate(a.energy, 0.05, 1.6);
+      const bass = gate(a.bass, 0.06, 1.5);
+      const mid = gate(a.mid, 0.05, 1.5);
+      const treble = gate(a.treble, 0.04, 1.4);
+
+      // Motion is driven almost entirely by audio (tiny crawl when quiet)
+      const scrollSpeed = 0.04 + energy * 0.55 + bass * 0.35;
+      const spinSpeed = mid * 0.55 + treble * 0.25;
+      this.tunnelScroll += scrollSpeed * dt;
+      this.tunnelSpin += spinSpeed * dt;
+
+      const layers = 12;
       for (let i = layers; i >= 0; i--) {
-        const t = (i / layers + this.t * (0.15 + a.energy * 0.4)) % 1;
-        const scale = t * t;
-        const r = scale * Math.min(w, h) * 0.7;
-        const sides = 6;
-        const hue = 280 + i * 12 + a.bass * 40;
+        let t = (i / layers + this.tunnelScroll * 0.35) % 1;
+        if (t < 0) t += 1;
+        // ease: denser near the viewer
+        const depth = t * t;
+        const pulse = 1 + bass * 0.12 * Math.sin(i + this.t);
+        const r = depth * Math.min(w, h) * 0.68 * pulse;
+        if (r < 4) continue;
+
+        // each ring's brightness from a spectrum slice (not constant thrash)
+        const ringV = binAt(a.freq, a.bins, 1 - t, a.sensitivity);
+        const alpha = 0.08 + depth * 0.25 + ringV * 0.55 + energy * 0.2;
+        const hue = 270 + i * 10 + mid * 30 + ringV * 40;
+        const lw = 1.2 + depth * 2.5 + ringV * 3 + bass * 1.5;
+
         g.beginPath();
+        const sides = 6;
         for (let s = 0; s <= sides; s++) {
-          const ang = spin + (s / sides) * Math.PI * 2;
+          const ang = this.tunnelSpin + (s / sides) * Math.PI * 2;
           const x = cx + Math.cos(ang) * r;
           const y = cy + Math.sin(ang) * r;
           if (s === 0) g.moveTo(x, y);
           else g.lineTo(x, y);
         }
-        g.strokeStyle = hsl(hue, 95, 60, 0.2 + t * 0.7);
-        g.lineWidth = 2 + (1 - t) * 4 + a.bass * 3;
+        g.strokeStyle = hsl(hue, 95, 58 + ringV * 15, clamp(alpha, 0, 0.95));
+        g.lineWidth = lw;
         g.stroke();
       }
-      // speed lines
-      if (!this.stars.length) this.seedForMode("tunnel");
-      const speed = 4 + a.energy * 20;
+
+      // center void + soft bass glow
+      const voidR = 18 + bass * 20;
+      const voidGrad = g.createRadialGradient(cx, cy, 0, cx, cy, voidR * 3);
+      voidGrad.addColorStop(0, hsl(300, 80, 50, 0.15 + bass * 0.35));
+      voidGrad.addColorStop(0.5, hsl(260, 70, 30, 0.08));
+      voidGrad.addColorStop(1, "transparent");
+      g.fillStyle = voidGrad;
+      g.beginPath();
+      g.arc(cx, cy, voidR * 3, 0, Math.PI * 2);
+      g.fill();
+
+      // sparse speed dots — only move when there's energy
+      const speed = (0.2 + energy * 6 + bass * 4) * dt * 60;
       for (const s of this.stars) {
-        s.z -= speed * dt * 60;
+        if (speed > 0.05) s.z -= speed;
         if (s.z <= 1) {
           s.x = (Math.random() - 0.5) * w;
           s.y = (Math.random() - 0.5) * h;
           s.z = w;
         }
-        const k = 80 / s.z;
+        const k = 90 / s.z;
         const x = cx + s.x * k;
         const y = cy + s.y * k;
-        g.fillStyle = hsl(190, 90, 70, 0.4);
-        g.fillRect(x, y, 2, 2);
+        if (x < 0 || x > w || y < 0 || y > h) continue;
+        const aDot = (0.15 + energy * 0.5) * (1 - s.z / w);
+        g.fillStyle = hsl(190 + treble * 40, 90, 70, aDot);
+        const sz = 1 + (1 - s.z / w) * 2;
+        g.fillRect(x, y, sz, sz);
       }
     }
 
