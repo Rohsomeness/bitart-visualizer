@@ -567,26 +567,25 @@
       g.stroke();
     }
 
-    /* ---------- SCOPE (calm fixed-scale CRT) ---------- */
+    /* ---------- SCOPE (mid energy — readable, not thrashing) ---------- */
     draw_scope(g, w, h, a) {
       g.fillStyle = "#0a1408";
       g.fillRect(0, 0, w, h);
-      g.strokeStyle = "rgba(40, 120, 40, 0.2)";
+      g.strokeStyle = "rgba(40, 120, 40, 0.22)";
       g.lineWidth = 1;
-      for (let x = 0; x < w; x += 40) {
+      for (let x = 0; x < w; x += 36) {
         g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
       }
-      for (let y = 0; y < h; y += 40) {
+      for (let y = 0; y < h; y += 36) {
         g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
       }
-      g.strokeStyle = "rgba(60, 160, 60, 0.28)";
+      g.strokeStyle = "rgba(60, 160, 60, 0.3)";
       g.beginPath();
       g.moveTo(0, h / 2); g.lineTo(w, h / 2);
       g.moveTo(w / 2, 0); g.lineTo(w / 2, h);
       g.stroke();
 
-      // fewer points + heavy smoothing
-      const points = Math.min(128, Math.max(48, Math.floor(w / 6)));
+      const points = Math.min(180, Math.max(64, Math.floor(w / 4)));
       if (!this.scopeBuf || this.scopeBuf.length !== points) {
         this.scopeBuf = new Float32Array(points);
       }
@@ -608,64 +607,66 @@
             count++;
           }
           const raw = count ? sum / count : 0;
-          // heavy low-pass — kills HF thrash from capture
-          this.scopeBuf[i] = lerp(this.scopeBuf[i], raw, 0.12);
+          // medium low-pass (between thrashy 0.45 and dead 0.12)
+          this.scopeBuf[i] = lerp(this.scopeBuf[i], raw, 0.28);
           peak = Math.max(peak, Math.abs(this.scopeBuf[i]));
           mean += this.scopeBuf[i];
         }
         mean /= points;
       } else {
         for (let i = 0; i < points; i++) {
-          this.scopeBuf[i] = lerp(this.scopeBuf[i], 0, 0.08);
+          this.scopeBuf[i] = lerp(this.scopeBuf[i], 0, 0.1);
         }
       }
 
-      // remove DC offset
-      for (let i = 0; i < points; i++) {
-        // don't mutate permanently; subtract mean when drawing
+      // Mild AGC: can lift quiet signal a little, hard-caps loud peaks
+      const noiseFloor = 0.05;
+      const targetPeak = 0.42; // aim for ~42% of half-height
+      let desired = 1;
+      if (peak > noiseFloor) {
+        desired = clamp(targetPeak / peak, 0.35, 2.2);
+      } else {
+        desired = 0.25; // tiny residual, not fully flat
       }
+      const sens = clamp(a.sensitivity || 1, 0.5, 1.8);
+      desired *= 0.7 + sens * 0.3;
+      this.scopeGain = lerp(this.scopeGain, desired, 0.14);
 
-      // AGC that ONLY turns DOWN when too hot — never boosts noise
-      const noiseFloor = 0.08;
-      let atten = 1;
-      if (peak > 0.35) {
-        atten = 0.35 / peak;
-      }
-      if (peak < noiseFloor) {
-        atten = 0; // flat when essentially silent/hiss
-      }
-      this.scopeGain = lerp(this.scopeGain, atten, 0.1);
-
-      // fixed gentle vertical scale (was auto-boosting → crazy)
-      const baseScale = 0.18; // fraction of half-height at full signal
-      const sens = clamp((a.sensitivity || 1), 0.5, 1.5);
-      const ampScale = this.scopeGain * baseScale * (0.85 + sens * 0.15);
+      const eGate = gate(a.energy, 0.05, 1.4);
+      // vertical scale midway between muted 0.18 and old hot ~0.4 * gain
+      const ampScale = this.scopeGain * (0.22 + eGate * 0.2);
 
       g.beginPath();
       for (let i = 0; i < points; i++) {
         const x = (i / (points - 1)) * w;
         let v = (this.scopeBuf[i] - mean) * ampScale;
-        // hard compress residual spikes
         const sign = v < 0 ? -1 : 1;
-        v = sign * Math.pow(Math.min(1, Math.abs(v) * 3), 1.15) / 3;
-        // clamp hard so it never leaves the CRT face
-        v = clamp(v, -0.42, 0.42);
-        const y = h / 2 + v * h;
+        // light compression
+        v = sign * Math.pow(Math.min(1.2, Math.abs(v)), 0.88);
+        v = clamp(v, -0.55, 0.55);
+        const y = h / 2 + v * (h * 0.5);
         if (i === 0) g.moveTo(x, y);
         else g.lineTo(x, y);
       }
 
+      const glow = 5 + eGate * 8;
       g.strokeStyle = "#5dff7a";
       g.lineWidth = 2;
       g.shadowColor = "#3dff5a";
-      g.shadowBlur = 6;
+      g.shadowBlur = glow;
       g.stroke();
       g.shadowBlur = 0;
-      g.globalAlpha = 0.25;
+      g.globalAlpha = 0.3;
       g.strokeStyle = "#a8ffb8";
       g.lineWidth = 1;
       g.stroke();
       g.globalAlpha = 1;
+
+      if (eGate > 0.12) {
+        g.fillStyle = hsl(120, 80, 55, 0.3 + eGate * 0.25);
+        g.fillRect(8, h / 2 - eGate * h * 0.12, 4, eGate * h * 0.24);
+        g.fillRect(w - 12, h / 2 - eGate * h * 0.12, 4, eGate * h * 0.24);
+      }
     }
 
     /* ---------- STARFIELD ---------- */
@@ -846,48 +847,54 @@
       }
     }
 
-    /* ---------- TUNNEL (slow, audio-gated pulse — not a rave) ---------- */
+    /* ---------- TUNNEL (mid energy — moving, not a rave) ---------- */
     draw_tunnel(g, w, h, a, dt) {
-      g.fillStyle = "rgba(4, 2, 14, 0.65)";
+      g.fillStyle = "rgba(4, 2, 14, 0.5)";
       g.fillRect(0, 0, w, h);
       if (!this.stars.length) this.seedForMode("tunnel");
 
       const cx = w / 2;
       const cy = h / 2;
-      const lv = this.smoothLevels(a);
-      const energy = lv.e;
-      const bass = lv.b;
-      const mid = lv.m;
 
-      // Almost static rings; only creep when music is clearly present
-      const scrollSpeed = energy * 0.12 + bass * 0.08; // was ~0.5+
-      const spinSpeed = mid * 0.08; // barely turns
+      // Lighter smoothing than synthwave's smoothLevels — more responsive
+      const eRaw = gate(a.energy, 0.06, 1.35);
+      const bRaw = gate(a.bass, 0.07, 1.35);
+      const mRaw = gate(a.mid, 0.06, 1.3);
+      const tRaw = gate(a.treble, 0.05, 1.25);
+      this.smEnergy = lerp(this.smEnergy, eRaw * (0.45 + 0.55 * eRaw), 0.16);
+      this.smBass = lerp(this.smBass, bRaw * (0.45 + 0.55 * bRaw), 0.18);
+      this.smMid = lerp(this.smMid, mRaw * (0.5 + 0.5 * mRaw), 0.16);
+      const energy = this.smEnergy;
+      const bass = this.smBass;
+      const mid = this.smMid;
+      const treble = tRaw;
+
+      // Halfway: muted was ~0.12e, hot was ~0.55e
+      const scrollSpeed = 0.03 + energy * 0.32 + bass * 0.22;
+      const spinSpeed = mid * 0.28 + treble * 0.12;
       this.tunnelScroll += scrollSpeed * dt;
       this.tunnelSpin += spinSpeed * dt;
 
-      const layers = 10;
+      const layers = 12;
       for (let i = 0; i < layers; i++) {
-        // fixed spacing with tiny scroll offset
         const base = (i + 1) / (layers + 1);
-        let t = (base + this.tunnelScroll * 0.08) % 1;
+        let t = (base + this.tunnelScroll * 0.22) % 1;
         if (t < 0.02) t = 0.02;
-        const depth = t;
-        // gentle breathing, not thrash
-        const pulse = 1 + bass * 0.06;
-        const r = depth * Math.min(w, h) * 0.62 * pulse;
-        if (r < 6) continue;
+        const depth = t * t * 0.35 + t * 0.65; // mild ease
+        const pulse = 1 + bass * 0.1;
+        const r = depth * Math.min(w, h) * 0.66 * pulse;
+        if (r < 5) continue;
 
-        // spectrum for brightness only — capped hard, no sensitivity multiply
         let ringV = 0;
         if (a.freq && a.bins) {
-          const idx = clamp(Math.floor((1 - depth) * (a.bins - 1)), 0, a.bins - 1);
-          ringV = Math.pow(a.freq[idx] / 255, 1.4); // compress loud bins
+          const idx = clamp(Math.floor((1 - t) * (a.bins - 1)), 0, a.bins - 1);
+          ringV = Math.pow(a.freq[idx] / 255, 1.15);
         }
         ringV = clamp(ringV, 0, 1);
 
-        const alpha = 0.12 + ringV * 0.35 + energy * 0.2 + bass * 0.12;
-        const hue = 275 + i * 8 + mid * 15;
-        const lw = 1 + depth * 1.5 + ringV * 1.5 + bass * 0.8;
+        const alpha = 0.14 + ringV * 0.45 + energy * 0.28 + bass * 0.15;
+        const hue = 275 + i * 10 + mid * 25 + ringV * 25;
+        const lw = 1.2 + depth * 2.2 + ringV * 2.2 + bass * 1.2;
 
         g.beginPath();
         const sides = 6;
@@ -898,38 +905,39 @@
           if (s === 0) g.moveTo(x, y);
           else g.lineTo(x, y);
         }
-        g.strokeStyle = hsl(hue, 90, 55, clamp(alpha, 0, 0.75));
+        g.strokeStyle = hsl(hue, 92, 58 + ringV * 12, clamp(alpha, 0, 0.88));
         g.lineWidth = lw;
         g.stroke();
       }
 
-      // soft center glow
-      const voidGrad = g.createRadialGradient(cx, cy, 0, cx, cy, 50 + bass * 30);
-      voidGrad.addColorStop(0, hsl(300, 70, 45, 0.08 + bass * 0.2));
+      const voidGrad = g.createRadialGradient(cx, cy, 0, cx, cy, 55 + bass * 40);
+      voidGrad.addColorStop(0, hsl(300, 75, 48, 0.1 + bass * 0.28));
+      voidGrad.addColorStop(0.55, hsl(260, 70, 30, 0.06));
       voidGrad.addColorStop(1, "transparent");
       g.fillStyle = voidGrad;
       g.beginPath();
-      g.arc(cx, cy, 80, 0, Math.PI * 2);
+      g.arc(cx, cy, 90 + bass * 20, 0, Math.PI * 2);
       g.fill();
 
-      // few slow stars
-      const speed = energy * 1.2 * dt * 60; // much slower
+      // stars — medium speed, half of them
+      const speed = (0.35 + energy * 3.5 + bass * 2.2) * dt * 60;
       for (let si = 0; si < this.stars.length; si++) {
+        if (si % 2 !== 0) continue;
         const s = this.stars[si];
-        // only use a subset
-        if (si % 3 !== 0) continue;
-        if (speed > 0.02) s.z -= speed;
+        if (speed > 0.03) s.z -= speed;
         if (s.z <= 1) {
           s.x = (Math.random() - 0.5) * w;
           s.y = (Math.random() - 0.5) * h;
           s.z = w;
         }
-        const k = 100 / s.z;
+        const k = 95 / s.z;
         const x = cx + s.x * k;
         const y = cy + s.y * k;
         if (x < 0 || x > w || y < 0 || y > h) continue;
-        g.fillStyle = hsl(200, 80, 70, 0.12 + energy * 0.35);
-        g.fillRect(x, y, 1.5, 1.5);
+        const aDot = (0.15 + energy * 0.45) * (1 - s.z / w);
+        g.fillStyle = hsl(195 + treble * 35, 88, 70, aDot);
+        const sz = 1 + (1 - s.z / w) * 2.2;
+        g.fillRect(x, y, sz, sz);
       }
     }
 
