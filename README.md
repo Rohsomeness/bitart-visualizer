@@ -2,9 +2,27 @@
 
 Retro **pixel / 80s** music visualizer for the browser. Capture whatever is playing on your system (or add the mic) and pick a vibe.
 
-**Live:** after GitHub Pages is on — `https://rohsomeness.github.io/bitart-visualizer/`
+**Live demo:** [rohsomeness.github.io/bitart-visualizer](https://rohsomeness.github.io/bitart-visualizer/)
 
-Sibling to [bitart-ambient](https://github.com/Rohsomeness/bitart-ambient).
+Sibling to [bitart-ambient](https://github.com/Rohsomeness/bitart-ambient) and [bitart-camera](https://github.com/Rohsomeness/bitart-camera).
+
+## Screenshots
+
+![Idle Bitart Visualizer shell](docs/screenshots/idle-shell.jpg)
+
+*Player shell before listening — tap LISTEN and share a tab with audio.*
+
+![Synthwave mode live](docs/screenshots/live-synthwave.jpg)
+
+*Synthwave — grid + sunset horizon reacting to audio.*
+
+![Bars mode live](docs/screenshots/live-bars.jpg)
+
+*Bars — classic neon EQ.*
+
+![All modes grid](docs/screenshots/all-modes-grid.jpg)
+
+*All-modes grid (12 vibes).*
 
 ## How it listens
 
@@ -54,31 +72,28 @@ Deep links: `?mode=synthwave` or `#` via the mode id in the URL.
 
 ## Controls
 
-- **Space** — start/stop system capture  
-- **← →** — prev/next mode  
-- **F** — fullscreen  
-- **H** — hide/show player  
-- **M** — mic toggle  
-- **G** — all-modes grid  
-- **SENS** slider — analysis sensitivity  
+- **Space** — start/stop system capture
+- **← →** — prev/next mode
+- **F** — fullscreen
+- **H** — hide/show player
+- **M** — mic toggle
+- **G** — all-modes grid
+- **SENS** slider — analysis sensitivity
 
 ## Local
 
 Open `index.html` over a local server (mic/system capture need a secure context):
 
 ```bash
-npx serve .
+npx --yes serve .
 ```
 
 Then open the printed URL (usually `http://localhost:3000`).
 
-## GitHub Pages
-
-Repo Settings → Pages → Deploy from branch `main` / root (`/`).
-
 ## Stack
 
-- Static HTML / CSS / JS  
-- Web Audio `AnalyserNode`  
-- Canvas 2D visualizers  
+- Static HTML / CSS / JS
+- Web Audio `AnalyserNode`
+- Canvas 2D visualizers
 - UI shell styled like Bitart Ambient (thocky player, LCD, scene rail + modal)
+- GitHub Pages from `main` (root)
